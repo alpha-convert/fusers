@@ -1,3 +1,8 @@
+{-
+
+Taken from https://gist.github.com/michaelt/ee3710c5bab9b7d0892bd552e0eedfd9
+
+-}
 {-#LANGUAGE BangPatterns #-}
 {-#LANGUAGE TemplateHaskell #-}
 module Benchmarks (bm) where
@@ -36,9 +41,6 @@ bm = do
                          , bench "fusers"         $ nfIO fusers_sum
                          , bench "fusers-fast-range"         $ nfIO fusers_sum'
                          , bench "conduit"        $ nfIO conduit_sum
-                         {-
-                         
-                         -}
                          , bench "pipes"          $ nfIO pipes_sum
                          , bench "iostreams"      $ nfIO iostreams_sum
                          , bench "machine"        $ nfIO machines_sum
@@ -92,6 +94,9 @@ conduit_basic = do
     assert (Prelude.length xs == 499000) $
         return (Prelude.length (xs :: [Int]))
 --
+{-
+yieldManyC = ofoldMap yield
+-}
 conduit_sum :: IO Int
 conduit_sum = do
     n <-  C.yieldMany [1..1000000]
