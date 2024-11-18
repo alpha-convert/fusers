@@ -95,8 +95,32 @@ conduit_basic = do
         return (Prelude.length (xs :: [Int]))
 --
 {-
-yieldManyC = ofoldMap yield
+
+yield :: forall (m :: * -> *) o i. Monad m => o -> ConduitT i o m ()
+yield o = ConduitT $ \rest -> HaveOutput (rest ()) o
+
+yieldManyC :: MonoFoldable mono => mono -> ConduitT i (Element mono) m ()
+yieldManyC [1..n] = ofoldMap yield [1..n]
+                  {- definition of ofoldMap -}
+                  = foldMap yield [1..n]
+                  {- definition of foldmap on lists -}
+                  = ((mconcat .) . map) yield [1..n]
+                  {- definition -}
+                  = mconcat (map yield [1..n])
+                  {- mconcat -}
+                  = foldr mappend mempty (map yield [1..n])
+                  {- definition -}
+                  = foldr (\k o -> yield k <> o) mempty [1..n]
+                  {- definitions... -}
+                  = foldr (\k o -> yield k >> o) mempty [1..n]
+                  = foldr (\k o -> yield k >>= \_ -> o) mempty [1..n]
+                  = foldr (\k o -> (ConduitT $ \rest -> HaveOutput (rest ()) k) >>= \_ -> o) mempty [1..n]
+                  = foldr (\k o -> ConduitT $ \h -> (\rest -> HaveOutput (rest ()) k) $ \a -> unConduitT ((\_ -> o) a) h)
+                  = foldr (\k o -> ConduitT $ \h -> (\rest -> HaveOutput (rest ()) k) $ \a -> unConduitT o h)
+                  = foldr (\k o -> ConduitT $ \h -> HaveOutput ((\a -> unConduitT o h) ()) k)
+                  = foldr (\k o -> ConduitT $ \h -> HaveOutput (unConduitT o h) k) mempty [1..n]
 -}
+
 conduit_sum :: IO Int
 conduit_sum = do
     n <-  C.yieldMany [1..1000000]
