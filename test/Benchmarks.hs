@@ -7,6 +7,29 @@ Taken from https://gist.github.com/michaelt/ee3710c5bab9b7d0892bd552e0eedfd9
 {-#LANGUAGE TemplateHaskell #-}
 module Benchmarks (bm) where
 
+import Criterion.Main
+
+import qualified Data.Conduit      as C
+import qualified Data.Conduit.Combinators as CC
+import qualified Data.Conduit.List as C hiding (map, drop, sinkNull, filter)
+
+import qualified Data.Machine      as M
+import qualified Data.Machine.Runner as M
+
+import qualified Pipes             as P
+import qualified Pipes.Prelude     as P
+import qualified Streaming.Prelude as S
+
+import Streaming (Of (..))
+import Streaming.Internal (Stream(..))
+import qualified Streaming.Internal as I
+import qualified Streaming as S
+
+import qualified System.IO.Streams as Streams
+
+import Data.List (foldl')
+import Control.Monad (void)
+import Control.Monad.Identity
 import           Data.Conduit as C
 import qualified Data.Conduit.Combinators as C
 
@@ -37,7 +60,50 @@ big = 250000497000
 bm :: IO ()
 bm = do
     defaultMain 
-      [ bgroup "sum"     [ bench "streaming"      $ nfIO streaming_sum
+      [ bgroup "fold"
+          [ bench "list"      $ whnf (foldl' (+) 0. ($ ()))  sourceL
+          , bench "streaming" $ whnf (runIdentity . S.fold (+) 0 id . ($ ())) ( sourceS)
+          , bench "conduit"   $ whnf (runIdentity . (C.$$ CC.foldl (+) 0) . ($ ())) sourceC
+          , bench "pipes"     $ whnf (runIdentity . P.fold (+) 0 id . ($ ())) sourceP
+          , bench "machines"  $ whnf (runIdentity . M.foldlT  (+) 0 . ($ ())) sourceM
+          ]
+      , bgroup "map"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.map (+1))
+          , bench "conduit"   $ whnf ((runIdentity . drainC)) (C.map (+1))
+          , bench "pipes"     $ whnf (runIdentity . drainP) (P.map (+1))
+          , bench "machines"  $ whnf (runIdentity . drainM) (M.auto (+1))
+          ]
+      , bgroup "drop"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.drop value)
+          , bench "conduit" $ whnf (runIdentity . drainC) (C.drop value)
+          , bench "pipes" $ whnf (runIdentity . drainP) (P.drop value)
+          , bench "machines" $ whnf (runIdentity . drainM) (M.dropping value)
+          ]
+      , bgroup "dropWhile"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.dropWhile (<= value))
+          , bench "conduit" $ whnf (runIdentity . drainC) (CC.dropWhile (<= value))
+          , bench "pipes" $ whnf (runIdentity . drainP) (P.dropWhile (<= value))
+          , bench "machines" $ whnf (runIdentity . drainM) (M.droppingWhile (<= value))
+          ]
+      , bgroup "scan"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.scan (+) 0 id)
+          , bench "conduit" $ whnf (runIdentity . drainC) (CC.scanl (+) 0)
+          , bench "pipes" $ whnf (runIdentity . drainP) (P.scan (+) 0 id)
+          , bench "machines" $ whnf (runIdentity . drainM) (M.scan (+) 0)
+          ]
+      , bgroup "take"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.take value)
+          , bench "conduit" $ whnf (runIdentity . drainC) (C.isolate value)
+          , bench "pipes" $ whnf (runIdentity . drainP) (P.take value)
+          , bench "machines" $ whnf (runIdentity . drainM) (M.taking value)
+          ]
+      , bgroup "takeWhile"
+          [ bench "streaming" $ whnf (runIdentity . drainS) (S.takeWhile (<= value))
+          , bench "conduit" $ whnf (runIdentity . drainC) (CC.takeWhile (<= value) C.=$= C.sinkNull)
+          , bench "pipes" $ whnf (runIdentity . drainP) (P.takeWhile (<= value))
+          , bench "machines" $ whnf (runIdentity . drainM) (M.takingWhile (<= value))
+          ]
+       , bgroup "composite"     [ bench "streaming"      $ nfIO streaming_sum
                          , bench "fusers"         $ nfIO fusers_sum
                          , bench "fusers-fast-range"         $ nfIO fusers_sum'
                         --  , bench "imp-fusers"         $ nfIO ifusers_sum
@@ -215,3 +281,25 @@ machines_sum =  do
   assert (n == big) $
       return n
   
+value :: Int
+value = 100000
+
+drainS p = S.effects (p (sourceS ()) )
+
+-- drainM :: M.ProcessT Identity Int o -> ()
+drainM m =  M.runT_ (sourceM () M.~> m)
+
+-- drainP :: P.Proxy () Int () a Identity () -> ()
+drainP p =  P.runEffect $ P.for (sourceP () P.>-> p) P.discard
+
+-- drainC :: C.Conduit Int Identity a -> ()
+drainC c = (sourceC () C.$= c) C.$$ C.sinkNull
+
+-- drainSC :: C.Sink Int Identity b -> b
+drainSC c = sourceC () C.$$ c
+
+sourceM () = M.enumerateFromTo 1 value
+sourceC () = C.sourceList [1..value]
+sourceP () = P.each [1..value]
+sourceS () = S.each [1..value] -- take value $ S.enumFrom 1
+sourceL () = [1..value]
