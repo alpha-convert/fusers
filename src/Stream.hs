@@ -96,8 +96,9 @@ fromListC cxs0 = S cxs0 $ \cxs k -> [||
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
   ||]
 
-range :: Int -> Int -> Stream Int m ()
+range :: (Lift a, Enum a, Ord a) => a -> a -> Stream a m ()
+-- range lo hi = S [|| lo ||] $ \cn k 
 range lo hi = S [|| lo ||] $ \cn k -> [||
     if $$cn >= hi then $$(k (Done [|| () ||]))
-    else $$(k (Yield [|| $$cn ||] [|| $$cn + 1 ||]))
+    else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
