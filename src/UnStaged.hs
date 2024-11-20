@@ -31,11 +31,21 @@ data Stream m a where
 2. Write effectful combinators: repeatM :: m a -> Stream m a, more!
 3. Write an actual effectful stream: Stream IO Int, which produces a stream of ints read from the terminal.
 4. WRite "good program" with this, and ensure it works. sum (take 3 (map read (repeatM getLine)))
-4. CPS it.
 5. Stage it.
 -}
 
 {-
 Code Q a
 is a piece of haskell code, that if you run it, evaluates to a value of type a.
+-}
+
+{-
+data Step m s a where
+    Done :: Step m s a
+    Eff :: Code Q (m s) -> Step m s a
+    Skip :: Code Q s -> Step m s a
+    Yield :: Code Q a -> Code Q s -> Step m s a
+
+data Stream m a where
+    S :: forall m a s. Code Q s -> (Code Q s -> Step m s a) -> Stream m a 
 -}
