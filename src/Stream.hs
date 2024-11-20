@@ -63,8 +63,8 @@ mapC :: (Code Q a -> Code Q b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next) = S cx0 $ \cx -> do
     next cx >>= \case
         Effect ams -> return (Effect ams)
-        Tau cx -> return (Tau cx)
-        Yield ca cx -> return (Yield (f ca) cx)
+        Tau cx' -> return (Tau cx')
+        Yield ca cx' -> return (Yield (f ca) cx')
         Done cr -> return (Done cr)
 
 map :: Code Q (a -> b) -> Stream a m r -> Stream b m r
@@ -74,7 +74,7 @@ drop :: Int -> Stream a m r -> Stream a m r
 drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn <= 0 ||]
-    if b then (stateMapC andZero <$> next cx) else do
+    if b then stateMapC andZero <$> next cx else do
       next cx >>= \case
           Effect cmx' -> return (Effect (fmapAction (\cs -> [|| ($$cs,$$cn) ||]) cmx'))
           Tau cx' -> return (Tau [|| ($$cx',$$cn) ||])
@@ -93,14 +93,14 @@ dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
             Effect cmx' -> return (Effect (fmapAction (with True) cmx'))
             Tau cx' -> return (Tau [||($$cx',True)||])
             Yield ca cx' -> do
-                b <- split (f ca)
-                if b then return (Tau (with True cx')) else return (Yield ca (with False cx'))
+                b' <- split (f ca)
+                if b' then return (Tau (with True cx')) else return (Yield ca (with False cx'))
             Done cr -> return (Done cr)
         where
             with b cx = [|| ($$cx,b) ||]
 
 take :: Int -> Stream a m r -> Stream a m r
-take n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> Gen $ \k ->
+take n0 (S cx0 next) = S [|| ($$cx0,n0) ||] $ \cxn -> Gen $ \k ->
     [||
         let !(x,n) = $$cxn in
         if n > 0 then
@@ -134,8 +134,9 @@ takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
             with b cx = [|| ($$cx,b) ||]
 
 filterC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
-filterC p (S cx0 next) = S cx0 $ \cx ->
-    next cx >>= \case
+filterC p (S cx0 next) = S cx0 $ \cx -> do
+    st <- next cx
+    case st of
         Effect cmx' -> return (Effect cmx')
         Tau cx' -> return (Tau cx')
         Yield ca cx' -> do 
@@ -184,7 +185,6 @@ fromListC cxs0 = S cxs0 $ \cxs -> Gen $ \k -> [||
         [] -> $$(k (Done [|| () ||]))
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
   ||]
-
 
 end :: Monad m => Stream a m r -> Code Q (m r)
 end s = [|| (snd <$> $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s)) ||]
