@@ -27,3 +27,7 @@ embed cma = Bind cma Return
 bindAction :: Action m a -> (Code Q a -> Action m b) -> Action m b
 bindAction (Return x) k = k x
 bindAction (Bind cma k) k' = Bind cma (\x -> bindAction (k x) k')
+
+flatten :: Monad m => Action m a -> Code Q (m a)
+flatten (Return ca) = [|| return $$ca ||]
+flatten (Bind ca k) = [|| $$ca >>= (\a -> $$(flatten (k [||a||]))) ||]
