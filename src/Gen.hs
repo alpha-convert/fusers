@@ -12,10 +12,10 @@ All of this is stolen from
 https://github.com/AndrasKovacs/staged/blob/main/icfp24paper/supplement/haskell-cftt/CFTT/Gen.hs
 -}
 
-newtype Gen a = Gen {unGen :: forall r. (a -> Code Q r) -> Code Q r}
+newtype Gen a = Gen {unGen :: forall r. (a -> CodeQ r) -> CodeQ r}
 
 
-runGen :: Gen (Code Q a) -> Code Q a
+runGen :: Gen (CodeQ a) -> CodeQ a
 runGen (Gen f) = f id
 
 instance Functor Gen where
@@ -50,19 +50,19 @@ instance MonadGen m => MonadGen (ExceptT e m) where
 instance MonadGen m => MonadGen (MaybeT m) where
   liftGen = lift . liftGen
 
-genLet :: MonadGen m => Code Q a -> m (Code Q a)
+genLet :: MonadGen m => CodeQ a -> m (CodeQ a)
 genLet a = liftGen $ Gen $ \k -> [|| let x = $$a in seq x $$(k [||x||]) ||]
 
-genSpread :: MonadGen m => Code Q (a,b) -> m (Code Q a, Code Q b)
+genSpread :: MonadGen m => CodeQ (a,b) -> m (CodeQ a, CodeQ b)
 genSpread cab = liftGen $ Gen $ \k' -> [||
     let (a,b) = $$cab in
     $$(k' ([||a||],[||b||]))
  ||]
 
-genIf :: Code Q Bool -> Gen a -> Gen a -> Gen a
+genIf :: CodeQ Bool -> Gen a -> Gen a -> Gen a
 genIf cb (Gen x) (Gen y) = Gen $ \k -> [||
     if $$cb then $$(x k) else $$(y k)
  ||]
 
-genLetRec :: MonadGen m => (Code Q a -> Code Q a) -> m (Code Q a)
+genLetRec :: MonadGen m => (CodeQ a -> CodeQ a) -> m (CodeQ a)
 genLetRec a = liftGen $ Gen $ \k -> [|| let x = $$(a [||x||]) in $$(k [||x||]) ||]

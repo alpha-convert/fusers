@@ -29,11 +29,11 @@ https://github.com/AndrasKovacs/staged/tree/main/icfp24paper/supplement
 -}
 data Step a m r s where
     Effect :: Action m s -> Step a m r s
-    Tau :: Code Q s -> Step a m r s
-    Yield :: Code Q a -> Code Q s -> Step a m r s
-    Done :: Code Q r -> Step a m r s
+    Tau :: CodeQ s -> Step a m r s
+    Yield :: CodeQ a -> CodeQ s -> Step a m r s
+    Done :: CodeQ r -> Step a m r s
 
-stateMapC :: (Code Q s -> Code Q s') -> Step a m r s -> Step a m r s'
+stateMapC :: (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
 stateMapC f (Effect cmx) = Effect (fmapAction f cmx)
 stateMapC f (Tau cx) = Tau (f cx)
 stateMapC f (Yield ca cx) = Yield ca (f cx)
@@ -41,7 +41,7 @@ stateMapC _ (Done cr) = Done cr
 
 data Stream a m r where
     {- State should probably be an HList of statically known states. -}
-    S :: forall a m r s. Code Q s -> (Code Q s -> Gen (Step a m r s)) -> Stream a m r
+    S :: forall a m r s. CodeQ s -> (CodeQ s -> Gen (Step a m r s)) -> Stream a m r
 
 {-
 CONSTRUCTION
@@ -59,7 +59,7 @@ range lo hi = S [|| lo ||] $ \cn -> Gen $ \k -> [||
 COMBINATORS
 -}
 
-mapC :: (Code Q a -> Code Q b) -> Stream a m r -> Stream b m r
+mapC :: (CodeQ a -> CodeQ b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next) = S cx0 $ \cx -> do
     next cx >>= \case
         Effect ams -> return (Effect ams)
@@ -67,7 +67,7 @@ mapC f (S cx0 next) = S cx0 $ \cx -> do
         Yield ca cx' -> return (Yield (f ca) cx')
         Done cr -> return (Done cr)
 
-map :: Code Q (a -> b) -> Stream a m r -> Stream b m r
+map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: Int -> Stream a m r -> Stream a m r
@@ -83,7 +83,7 @@ drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
        where
            andZero cx = [|| ($$cx,0) ||]
 
-dropWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
+dropWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m r
 dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
     (cx,cb) <- split cxb
     b <- split cb
@@ -120,7 +120,7 @@ take n0 (S cx0 next) = S [|| ($$cx0,n0) ||] $ \cxn -> Gen $ \k ->
         where
             andZero cx = [|| ($$cx,0) ||]
 
-takeWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m ()
+takeWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
 takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
         let !(x,b) = $$cx in
         if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
@@ -133,7 +133,7 @@ takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
         where
             with b cx = [|| ($$cx,b) ||]
 
-filterC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
+filterC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m r
 filterC p (S cx0 next) = S cx0 $ \cx -> do
     st <- next cx
     case st of
@@ -144,10 +144,10 @@ filterC p (S cx0 next) = S cx0 $ \cx -> do
             if b then return (Yield ca cx') else return (Tau cx')
         Done cr -> return (Done cr)
 
-filter :: Code Q (a -> Bool) -> Stream a m r -> Stream a m r
+filter :: CodeQ (a -> Bool) -> Stream a m r -> Stream a m r
 filter f = filterC (\ca -> [|| $$f $$ca ||])
 
-scanC :: (Code Q x -> Code Q a -> Code Q x) -> Code Q x -> (Code Q x -> Code Q b) -> Stream a m r -> Stream b m r
+scanC :: (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
 scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
     (cs,cx) <- split csx 
     next cs >>= \case
@@ -161,7 +161,7 @@ scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
 {-
 ELIMINATORS
 -}
-foldC :: Monad m => (Code Q x -> Code Q a -> Code Q x) -> Code Q x -> (Code Q x -> Code Q b) -> Stream a m r -> Code Q (m (b,r))
+foldC :: Monad m => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
 foldC step begin done (S cx0 next) = [|| do
     let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
             Effect cmx' -> [|| $$(flatten cmx') >>= loop acc ||]
@@ -173,21 +173,21 @@ foldC step begin done (S cx0 next) = [|| do
  ||]
 
 
-toListC :: Monad m => Stream a m r -> Code Q (m ([a],r))
+toListC :: Monad m => Stream a m r -> CodeQ (m ([a],r))
 toListC = foldC (\cdl ca -> [|| \ls -> $$cdl ($$ca : ls) ||]) [|| id ||] (\dl -> [|| $$dl [] ||])
 
-sumC :: Monad m => Stream Int m r -> Code Q (m Int)
+sumC :: Monad m => Stream Int m r -> CodeQ (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
-fromListC :: Code Q [a] -> Stream a m ()
+fromListC :: CodeQ [a] -> Stream a m ()
 fromListC cxs0 = S cxs0 $ \cxs -> Gen $ \k -> [||
     case $$cxs of
         [] -> $$(k (Done [|| () ||]))
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
   ||]
 
-end :: Monad m => Stream a m r -> Code Q (m r)
+end :: Monad m => Stream a m r -> CodeQ (m r)
 end s = [|| (snd <$> $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s)) ||]
 
-drain :: Monad m => Stream a m r -> Code Q (m ())
+drain :: Monad m => Stream a m r -> CodeQ (m ())
 drain s = [|| (Control.Monad.void $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s))||]
