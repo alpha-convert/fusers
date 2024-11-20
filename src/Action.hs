@@ -24,6 +24,10 @@ data Action m a where
 embed :: Code Q (m a) -> Action m a
 embed cma = Bind cma Return
 
+fmapAction :: (Code Q a -> Code Q b) -> Action m a -> Action m b
+fmapAction f (Return x) = Return (f x)
+fmapAction f (Bind cma k) = Bind cma (fmapAction f . k)
+
 bindAction :: Action m a -> (Code Q a -> Action m b) -> Action m b
 bindAction (Return x) k = k x
 bindAction (Bind cma k) k' = Bind cma (\x -> bindAction (k x) k')
