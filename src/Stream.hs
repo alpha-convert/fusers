@@ -70,18 +70,14 @@ map :: Code Q (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: Int -> Stream a m r -> Stream a m r
-drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> Gen $ \k -> [||
-    let !(x,n) = $$cxn in
-    if n > 0 then
-        $$(unGen (next [||x||]) (\case
-             Effect cmx' -> k (Effect (fmapAction (\cs -> [|| ($$cs,n) ||]) cmx'))
-             Tau cx' -> k (Tau [|| ($$cx',n) ||])
-             Yield _ cx' -> k (Tau [|| ($$cx',n-1) ||])
-             Done cr -> k (Done cr)
-         ))
-    else
-        $$(unGen (next [||x||]) (k . stateMapC andZero))
- ||]
+drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn ->
+    genSpread cxn $ \cx cn ->
+    genIf [|| $$cn <= 0 ||] (stateMapC andZero <$> next cx) $ do
+        next cx >>= \case
+            Effect cmx' -> return (Effect (fmapAction (\cs -> [|| ($$cs,$$cn) ||]) cmx'))
+            Tau cx' -> return (Tau [|| ($$cx',$$cn) ||])
+            Yield _ cx' -> return (Tau [|| ($$cx',$$cn - 1) ||])
+            Done cr -> return (Done cr)
          where
              andZero cx = [|| ($$cx,0) ||]
 
