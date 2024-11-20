@@ -16,6 +16,7 @@ import Language.Haskell.TH.Syntax
 import qualified Control.Monad
 import Action
 import Gen
+import Split
 
 {-
 We need to win on all of these benchmarks.
@@ -71,24 +72,29 @@ map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: Int -> Stream a m r -> Stream a m r
 drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
-    (cx,cn) <- genSpread cxn
-    genIf [|| $$cn <= 0 ||] (stateMapC andZero <$> next cx) $ do
-        next cx >>= \case
-            Effect cmx' -> return (Effect (fmapAction (\cs -> [|| ($$cs,$$cn) ||]) cmx'))
-            Tau cx' -> return (Tau [|| ($$cx',$$cn) ||])
-            Yield _ cx' -> return (Tau [|| ($$cx',$$cn - 1) ||])
-            Done cr -> return (Done cr)
-         where
-             andZero cx = [|| ($$cx,0) ||]
+    (cx,cn) <- split cxn
+    b <- split [|| $$cn <= 0 ||]
+    if b then (stateMapC andZero <$> next cx) else do
+      next cx >>= \case
+          Effect cmx' -> return (Effect (fmapAction (\cs -> [|| ($$cs,$$cn) ||]) cmx'))
+          Tau cx' -> return (Tau [|| ($$cx',$$cn) ||])
+          Yield _ cx' -> return (Tau [|| ($$cx',$$cn - 1) ||])
+          Done cr -> return (Done cr)
+       where
+           andZero cx = [|| ($$cx,0) ||]
 
 dropWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
 dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
-    (cx,cb) <- genSpread cxb
-    genIf [|| not $$cb ||] (stateMapC (with False) <$> next cx) $
-        next cx >>= \case
+    (cx,cb) <- split cxb
+    b <- split cb
+    if not b 
+    then stateMapC (with False) <$> next cx
+    else next cx >>= \case
             Effect cmx' -> return (Effect (fmapAction (with True) cmx'))
             Tau cx' -> return (Tau [||($$cx',True)||])
-            Yield ca cx' -> genIf (f ca) (return (Tau (with True cx'))) (return (Yield ca (with False cx')))
+            Yield ca cx' -> do
+                b <- split (f ca)
+                if b then return (Tau (with True cx')) else return (Yield ca (with False cx'))
             Done cr -> return (Done cr)
         where
             with b cx = [|| ($$cx,b) ||]
@@ -132,7 +138,9 @@ filterC p (S cx0 next) = S cx0 $ \cx ->
     next cx >>= \case
         Effect cmx' -> return (Effect cmx')
         Tau cx' -> return (Tau cx')
-        Yield ca cx' -> genIf (p ca) (return (Yield ca cx')) (return (Tau cx'))
+        Yield ca cx' -> do 
+            b <- split (p ca)
+            if b then return (Yield ca cx') else return (Tau cx')
         Done cr -> return (Done cr)
 
 filter :: Code Q (a -> Bool) -> Stream a m r -> Stream a m r
@@ -140,7 +148,7 @@ filter f = filterC (\ca -> [|| $$f $$ca ||])
 
 scanC :: (Code Q x -> Code Q a -> Code Q x) -> Code Q x -> (Code Q x -> Code Q b) -> Stream a m r -> Stream b m r
 scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
-    (cs,cx) <- genSpread csx 
+    (cs,cx) <- split csx 
     next cs >>= \case
         Effect cms' -> return (Effect (fmapAction (\cs' -> [|| ($$cs',$$cx) ||]) cms'))
         Tau cs' -> return (Tau [|| ($$cs',$$cx)||])
