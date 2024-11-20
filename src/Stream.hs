@@ -15,7 +15,7 @@ import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 import qualified Control.Monad
 import Action
-import ContQ
+import Gen
 
 {-
 We need to win on all of these benchmarks.
@@ -40,14 +40,14 @@ stateMapC _ (Done cr) = Done cr
 
 data Stream a m r where
     {- State should probably be an HList of statically known states. -}
-    S :: forall a m r s. Code Q s -> (Code Q s -> ContQ (Step a m r s)) -> Stream a m r
+    S :: forall a m r s. Code Q s -> (Code Q s -> Gen (Step a m r s)) -> Stream a m r
 
 {-
 CONSTRUCTION
 -}
 
 range :: (Lift a, Enum a, Ord a) => a -> a -> Stream a m ()
-range lo hi = S [|| lo ||] $ \cn -> ContQ $ \k -> [||
+range lo hi = S [|| lo ||] $ \cn -> Gen $ \k -> [||
     if $$cn >= hi then $$(k (Done [|| () ||]))
     else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
@@ -70,25 +70,25 @@ map :: Code Q (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: Int -> Stream a m r -> Stream a m r
-drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> ContQ $ \k -> [||
+drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> Gen $ \k -> [||
     let !(x,n) = $$cxn in
     if n > 0 then
-        $$(unContQ (next [||x||]) (\case
+        $$(unGen (next [||x||]) (\case
              Effect cmx' -> k (Effect (fmapAction (\cs -> [|| ($$cs,n) ||]) cmx'))
              Tau cx' -> k (Tau [|| ($$cx',n) ||])
              Yield _ cx' -> k (Tau [|| ($$cx',n-1) ||])
              Done cr -> k (Done cr)
          ))
     else
-        $$(unContQ (next [||x||]) (k . stateMapC andZero))
+        $$(unGen (next [||x||]) (k . stateMapC andZero))
  ||]
          where
              andZero cx = [|| ($$cx,0) ||]
 
 dropWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
-dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> ContQ $ \k -> [||
+dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
         let !(x,b) = $$cx in
-        if not b then $$(unContQ (next [||x||]) (k . stateMapC (with False))) else $$(unContQ (next [||x||]) (\case
+        if not b then $$(unGen (next [||x||]) (k . stateMapC (with False))) else $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (fmapAction (with True) cmx'))
             Tau cx' -> k (Tau (with True cx'))
             Yield ca cx' -> [|| if $$(f ca) then $$(k (Tau (with True cx'))) else $$(k (Yield ca (with False cx'))) ||]
@@ -99,17 +99,17 @@ dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> ContQ $ \k -> [||
             with b cx = [|| ($$cx,b) ||]
 
 take :: Int -> Stream a m r -> Stream a m r
-take n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> ContQ $ \k ->
+take n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> Gen $ \k ->
     [||
         let !(x,n) = $$cxn in
         if n > 0 then
-        $$(unContQ (next [||x||]) (\case
+        $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (fmapAction (\cs -> [|| ($$cs,n) ||]) cmx'))
             Tau cx' -> k (Tau [|| ($$cx',n) ||])
             Yield ca cx' -> k (Yield ca [|| ($$cx',n-1) ||])
             Done cr -> k (Done cr)
         ))
-        else $$(unContQ (next [||x||]) (\case
+        else $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (fmapAction andZero cmx'))
             Tau cx' -> k (Tau (andZero cx'))
             Yield _ cx' -> k (Tau (andZero cx'))
@@ -120,9 +120,9 @@ take n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> ContQ $ \k ->
             andZero cx = [|| ($$cx,0) ||]
 
 takeWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m ()
-takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> ContQ $ \k -> [||
+takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
         let !(x,b) = $$cx in
-        if not b then $$(k (Done [|| () ||])) else $$(unContQ (next [||x||]) (\case
+        if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (fmapAction (with True) cmx'))
             Tau cx' -> k (Tau (with True cx'))
             Yield ca cx' -> [|| if $$(f ca) then $$(k (Yield ca (with True cx'))) else $$(k (Tau (with False cx'))) ||]
@@ -159,7 +159,7 @@ ELIMINATORS
 -}
 foldC :: Monad m => (Code Q x -> Code Q a -> Code Q x) -> Code Q x -> (Code Q x -> Code Q b) -> Stream a m r -> Code Q (m (b,r))
 foldC step begin done (S cx0 next) = [|| do
-    let loop !acc !x = $$(unContQ (next [|| x ||]) $ \case
+    let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
             Effect cmx' -> [|| $$(flatten cmx') >>= loop acc ||]
             Tau cx' -> [|| loop acc $$cx' ||]
             Yield ca cx' -> [|| loop $$(step [|| acc ||] ca) $$cx' ||]
@@ -176,7 +176,7 @@ sumC :: Monad m => Stream Int m r -> Code Q (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
 fromListC :: Code Q [a] -> Stream a m ()
-fromListC cxs0 = S cxs0 $ \cxs -> ContQ $ \k -> [||
+fromListC cxs0 = S cxs0 $ \cxs -> Gen $ \k -> [||
     case $$cxs of
         [] -> $$(k (Done [|| () ||]))
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
