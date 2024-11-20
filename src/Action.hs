@@ -34,4 +34,4 @@ bindAction (Bind cma k) k' = Bind cma (\x -> bindAction (k x) k')
 
 flatten :: Monad m => Action m a -> Code Q (m a)
 flatten (Return ca) = [|| return $$ca ||]
-flatten (Bind ca k) = [|| $$ca >>= (\a -> $$(flatten (k [||a||]))) ||]
+flatten (Bind cma k) = [|| $$cma >>= (\a -> $$(flatten (k [||a||]))) ||]

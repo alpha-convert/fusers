@@ -53,10 +53,10 @@ instance MonadGen m => MonadGen (MaybeT m) where
 genLet :: MonadGen m => Code Q a -> m (Code Q a)
 genLet a = liftGen $ Gen $ \k -> [|| let x = $$a in seq x $$(k [||x||]) ||]
 
-genSpread :: Code Q (a,b) -> (Code Q a -> Code Q b -> Gen c) -> Gen c
-genSpread cab k = Gen $ \k' -> [||
+genSpread :: MonadGen m => Code Q (a,b) -> m (Code Q a, Code Q b)
+genSpread cab = liftGen $ Gen $ \k' -> [||
     let (a,b) = $$cab in
-    $$(unGen (k [||a||] [||b||]) k')
+    $$(k' ([||a||],[||b||]))
  ||]
 
 genIf :: Code Q Bool -> Gen a -> Gen a -> Gen a

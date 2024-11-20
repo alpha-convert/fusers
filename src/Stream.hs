@@ -70,8 +70,8 @@ map :: Code Q (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: Int -> Stream a m r -> Stream a m r
-drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn ->
-    genSpread cxn $ \cx cn ->
+drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
+    (cx,cn) <- genSpread cxn
     genIf [|| $$cn <= 0 ||] (stateMapC andZero <$> next cx) $ do
         next cx >>= \case
             Effect cmx' -> return (Effect (fmapAction (\cs -> [|| ($$cs,$$cn) ||]) cmx'))
@@ -82,15 +82,14 @@ drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn ->
              andZero cx = [|| ($$cx,0) ||]
 
 dropWhileC :: (Code Q a -> Code Q Bool) -> Stream a m r -> Stream a m r
-dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
-        let !(x,b) = $$cx in
-        if not b then $$(unGen (next [||x||]) (k . stateMapC (with False))) else $$(unGen (next [||x||]) (\case
-            Effect cmx' -> k (Effect (fmapAction (with True) cmx'))
-            Tau cx' -> k (Tau (with True cx'))
-            Yield ca cx' -> [|| if $$(f ca) then $$(k (Tau (with True cx'))) else $$(k (Yield ca (with False cx'))) ||]
-            Done cr -> k (Done cr)
-        ))
-    ||]
+dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
+    (cx,cb) <- genSpread cxb
+    genIf [|| not $$cb ||] (stateMapC (with False) <$> next cx) $
+        next cx >>= \case
+            Effect cmx' -> return (Effect (fmapAction (with True) cmx'))
+            Tau cx' -> return (Tau [||($$cx',True)||])
+            Yield ca cx' -> genIf (f ca) (return (Tau (with True cx'))) (return (Yield ca (with False cx')))
+            Done cr -> return (Done cr)
         where
             with b cx = [|| ($$cx,b) ||]
 
@@ -140,8 +139,8 @@ filter :: Code Q (a -> Bool) -> Stream a m r -> Stream a m r
 filter f = filterC (\ca -> [|| $$f $$ca ||])
 
 scanC :: (Code Q x -> Code Q a -> Code Q x) -> Code Q x -> (Code Q x -> Code Q b) -> Stream a m r -> Stream b m r
-scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx ->
-    genSpread csx $ \cs cx -> do
+scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
+    (cs,cx) <- genSpread csx 
     next cs >>= \case
         Effect cms' -> return (Effect (fmapAction (\cs' -> [|| ($$cs',$$cx) ||]) cms'))
         Tau cs' -> return (Tau [|| ($$cs',$$cx)||])
