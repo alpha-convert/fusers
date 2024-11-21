@@ -32,6 +32,8 @@ dependencies:
 - streaming
 - STMonadTrans
 - transformers
+- mtl
+- HList
 
 ghc-options:
 - -Wall
