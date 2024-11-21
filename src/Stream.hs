@@ -48,7 +48,7 @@ CONSTRUCTION
 -}
 
 range :: (Lift a, Enum a, Ord a) => a -> a -> Stream a m ()
-range lo hi = S (return [|| lo ||]) $ \cn -> Gen $ \k -> [||
+range lo hi = S (return [|| lo ||]) $ \cn -> gen $ \k -> [||
     if $$cn >= hi then $$(k (Done [|| () ||]))
     else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
@@ -108,7 +108,13 @@ dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $
             with b cx = [|| ($$cx,b) ||]
 
 take :: Functor m => Int -> Stream a m r -> Stream a m r
-take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -> Gen $ \k ->
+take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -> do
+    (cx,cn) <- split cxn
+    b <- split [|| $$cn > 0 ||]
+    if not b then stateMapC andZero <$> next cx
+    else _
+    {-
+    Gen $ \k ->
     [||
         let !(x,n) = $$cxn in
         if n > 0 then
@@ -125,11 +131,12 @@ take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -
             Done cr -> k (Done cr)
         ))
     ||]
+    -}
         where
             andZero cx = [|| ($$cx,0) ||]
 
 takeWhileC :: Functor m => (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
-takeWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cx -> Gen $ \k -> [||
+takeWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cx -> gen $ \k -> [||
         let !(x,b) = $$cx in
         if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (with True <$> cmx'))
@@ -188,7 +195,7 @@ sumC :: (Monad m, Improve m n) => Stream Int n r -> CodeQ (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
 fromListC :: CodeQ [a] -> Stream a m ()
-fromListC cxs0 = S (return cxs0) $ \cxs -> Gen $ \k -> [||
+fromListC cxs0 = S (return cxs0) $ \cxs -> gen $ \k -> [||
     case $$cxs of
         [] -> $$(k (Done [|| () ||]))
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))

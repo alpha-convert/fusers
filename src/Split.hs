@@ -23,23 +23,23 @@ caseM :: (MonadGen m) => Split a b => CodeQ a -> (b -> m c) -> m c
 caseM a f = split a >>= f
 
 instance Split Bool Bool where
-  splitGen x = Gen $ \k -> [|| (if $$x then $$(k True) else $$(k False)) ||]
+  splitGen x = gen $ \k -> [|| (if $$x then $$(k True) else $$(k False)) ||]
 
 instance Split [a] (Maybe (CodeQ a, CodeQ [a])) where
-  splitGen x = Gen $ \k -> [|| case $$x of
+  splitGen x = gen $ \k -> [|| case $$x of
     []   -> $$(k Nothing)
     a:as -> $$(k (Just ([||a||], [||as||]))) ||]
 
 instance Split (a, b) (CodeQ a, CodeQ b) where
-  splitGen x = Gen $ \k -> [|| case $$x of
+  splitGen x = gen $ \k -> [|| case $$x of
     (a, b) -> $$(k ([||a||], [||b||])) ||]
 
 instance Split (Either a b) (Either (CodeQ a) (CodeQ b)) where
-  splitGen x = Gen $ \k -> [|| case $$x of
+  splitGen x = gen $ \k -> [|| case $$x of
     Left a  -> $$(k (Left [||a||]))
     Right b -> $$(k (Right [||b||])) ||]
 
 instance Split (Maybe a) (Maybe (CodeQ a)) where
-  splitGen x = Gen $ \k -> [|| case $$x of
+  splitGen x = gen $ \k -> [|| case $$x of
     Nothing -> $$(k Nothing)
     Just a  -> $$(k (Just [||a||])) ||]

@@ -4,23 +4,56 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE TupleSections#-}
+{-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
+
 module Improve where
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Reader
+import GenRep
 import Gen
 import Language.Haskell.TH
 import Data.Functor.Identity
 import Control.Monad.Trans.State
 import Split
+import Control.Monad.ST (RealWorld)
+import GHC.Base
 
 class MonadGen n => Improve m n | m -> n, n -> m where
   up   :: CodeQ (m a) -> n (CodeQ a)
   down :: n (CodeQ a) -> CodeQ (m a)
 
 instance Improve Identity Gen where
-  up x = Gen \k -> k [||runIdentity $$x||]
+  up x = gen \k -> k [||runIdentity $$x||]
   down x = unGen x \a -> [||Identity $$a||]
+
+{- YUCK! -}
+data IOGen a = IOGen (CodeQ (State# RealWorld) -> GenRep (TupleRep ((:) @RuntimeRep ZeroBitRep ((:) @RuntimeRep LiftedRep ('[] @RuntimeRep)))) (CodeQ (State# RealWorld),Gen a))
+
+instance Functor IOGen where
+instance Applicative IOGen where
+instance Monad IOGen where
+instance MonadGen IOGen where
+  liftGen ga = IOGen (return . (,ga))
+
+runIO :: IO a -> State# RealWorld -> (# State# RealWorld, a #)
+runIO (IO f) = f
+
+-- @
+
+instance Improve IO IOGen where
+  up cioa = IOGen (\csr -> do
+      _
+    )
+  down (IOGen k) = [||
+    IO (\sr -> $$(runGenRep $ do {
+      (csr,q) <- k [||sr||];
+      return [|| (# $$csr, $$(runGen q) #) ||]
+    })) ||]
 
 instance (Improve m n) => Improve (StateT s m) (StateT (CodeQ s) n) where
 
