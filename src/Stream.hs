@@ -41,21 +41,20 @@ stateMapC f (Yield ca cx) = Yield ca (f cx)
 stateMapC _ (Done cr) = Done cr
 
 data Stream a n r where
-    {- State should probably be an HList of statically known states. -}
-    S :: forall a n r s. CodeQ s -> (CodeQ s -> Gen (Step a n r s)) -> Stream a n r
+    S :: forall a n r s. Gen (CodeQ s) -> (CodeQ s -> Gen (Step a n r s)) -> Stream a n r
 
 {-
 CONSTRUCTION
 -}
 
 range :: (Lift a, Enum a, Ord a) => a -> a -> Stream a m ()
-range lo hi = S [|| lo ||] $ \cn -> Gen $ \k -> [||
+range lo hi = S (return [|| lo ||]) $ \cn -> Gen $ \k -> [||
     if $$cn >= hi then $$(k (Done [|| () ||]))
     else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
 
 repeat :: (Improve m n) => CodeQ (m a) -> Stream a n Void
-repeat act = S [|| Nothing ||] $ \cmaybea -> do
+repeat act = S (return [|| Nothing ||]) $ \cmaybea -> do
     maybea <- split cmaybea
     case maybea of
         Nothing -> return $ Effect $ do
@@ -79,7 +78,7 @@ map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
 drop :: (Functor m) => Int -> Stream a m r -> Stream a m r
-drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
+drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn <= 0 ||]
     if b then stateMapC andZero <$> next cx else do
@@ -92,7 +91,7 @@ drop n (S cx0 next) = S [|| ($$cx0,n) ||] $ \cxn -> do
            andZero cx = [|| ($$cx,0) ||]
 
 dropWhileC :: (Improve m n) => (CodeQ a -> CodeQ Bool) -> Stream a n r -> Stream a n r
-dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
+dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cxb -> do
     (cx,cb) <- split cxb
     b <- split cb
     if not b
@@ -109,7 +108,7 @@ dropWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cxb -> do
             with b cx = [|| ($$cx,b) ||]
 
 take :: Functor m => Int -> Stream a m r -> Stream a m r
-take n0 (S cx0 next) = S [|| ($$cx0,n0) ||] $ \cxn -> Gen $ \k ->
+take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -> Gen $ \k ->
     [||
         let !(x,n) = $$cxn in
         if n > 0 then
@@ -130,7 +129,7 @@ take n0 (S cx0 next) = S [|| ($$cx0,n0) ||] $ \cxn -> Gen $ \k ->
             andZero cx = [|| ($$cx,0) ||]
 
 takeWhileC :: Functor m => (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
-takeWhileC f (S cx0 next) = S [|| ($$cx0,True) ||] $ \cx -> Gen $ \k -> [||
+takeWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cx -> Gen $ \k -> [||
         let !(x,b) = $$cx in
         if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
             Effect cmx' -> k (Effect (with True <$> cmx'))
@@ -157,7 +156,7 @@ filter :: CodeQ (a -> Bool) -> Stream a m r -> Stream a m r
 filter f = filterC (\ca -> [|| $$f $$ca ||])
 
 scanC :: Functor m => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
-scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
+scanC step begin done (S kcs0 next) = S (do {cs0 <- kcs0; return [|| ($$cs0,$$begin) ||]}) $ \csx -> do
     (cs,cx) <- split csx
     next cs >>= \case
         Effect cms' -> return (Effect ((\cs' -> [|| ($$cs',$$cx) ||]) <$> cms'))
@@ -171,7 +170,7 @@ scanC step begin done (S cs0 next) = S [|| ($$cs0,$$begin) ||] $ \csx -> do
 ELIMINATORS
 -}
 foldC :: (Monad m, Improve m n)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a n r -> CodeQ (m (b,r))
-foldC step begin done (S cx0 next) = [|| do
+foldC step begin done (S kcx0 next) = unGen kcx0 $ \cx0 -> [|| do
     let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
             Effect cmx' -> [|| $$(down cmx') >>= loop acc ||]
             Tau cx' -> [|| loop acc $$cx' ||]
@@ -189,7 +188,7 @@ sumC :: (Monad m, Improve m n) => Stream Int n r -> CodeQ (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
 fromListC :: CodeQ [a] -> Stream a m ()
-fromListC cxs0 = S cxs0 $ \cxs -> Gen $ \k -> [||
+fromListC cxs0 = S (return cxs0) $ \cxs -> Gen $ \k -> [||
     case $$cxs of
         [] -> $$(k (Done [|| () ||]))
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
