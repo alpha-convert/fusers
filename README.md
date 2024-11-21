@@ -1,7 +1,7 @@
 # fusers
 
 This repository contains in-progress work on a Haskell effectful streaming library that *guarantees* fusion
-statically with stagin. This should enable programmers to safely write extremely performant stream processing code *without* having to rely on GHC's rewriting system for fusion.
+statically with stagin. This should enable programmers to write performant and effectful stream processing code *without* having to rely on GHC's rewriting system for fusion.
 
 The ideas in this repository are not new, but as far as I can tell, this is the first project to try to glue them all together. The main inspiration comes from:
 
