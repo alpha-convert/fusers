@@ -106,8 +106,6 @@ bm = do
        , bgroup "composite"     [ bench "streaming"      $ nfIO streaming_sum
                          , bench "fusers"         $ nfIO fusers_sum
                          , bench "fusers-fast-range"         $ nfIO fusers_sum'
-                        --  , bench "imp-fusers"         $ nfIO ifusers_sum
-                         , bench "imp-fusers-fast-range"         $ nfIO ifusers_sum'
                          , bench "conduit"        $ nfIO conduit_sum
                          , bench "pipes"          $ nfIO pipes_sum
                          , bench "iostreams"      $ nfIO iostreams_sum
@@ -126,9 +124,6 @@ fusers_sum = $$F.fusers_sum
 
 fusers_sum' :: IO Int
 fusers_sum' = $$F.fusers_sum'
-
-ifusers_sum' :: IO Int
-ifusers_sum' = $$F.ifusers_sum'
 
 
 pipes_basic :: IO Int
