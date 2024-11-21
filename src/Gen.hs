@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 module Gen (
-  Gen,
+  Gen(..),
   MonadGen(..),
   gen,
   unGen,

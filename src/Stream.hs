@@ -40,6 +40,8 @@ stateMapC f (Tau cx) = Tau (f cx)
 stateMapC f (Yield ca cx) = Yield ca (f cx)
 stateMapC _ (Done cr) = Done cr
 
+{- Probably should refactor this so m is the index and we have the Improve typeclass constraint inside Step. This way
+clients of the library never see the Improve monad n types. -} 
 data Stream a n r where
     S :: forall a n r s. Gen (CodeQ s) -> (CodeQ s -> Gen (Step a n r s)) -> Stream a n r
 
@@ -76,6 +78,19 @@ mapC f (S cx0 next) = S cx0 $ \cx -> do
 
 map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
+
+mapMC :: (Monad m) => (CodeQ a -> m (CodeQ b)) -> Stream a m r -> Stream b m r
+mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \cxm -> do
+    (cx,cm) <- split cxm
+    mc <- split cm
+    case mc of
+        Nothing -> next cx >>= \case
+            Effect u -> return (Effect ((\cs -> [|| ($$cs,Nothing) ||]) <$> u))
+            Tau cx' -> return (Tau [|| ($$cx',Nothing) ||])
+            Yield ca cx' -> return (Effect $ do {cb <- f ca; return [|| ($$cx',Just $$cb) ||]})
+            Done cr -> return (Done cr)
+        Just ca -> return (Yield ca [|| ($$cx,Nothing) ||])
+    
 
 drop :: (Functor m) => Int -> Stream a m r -> Stream a m r
 drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> do

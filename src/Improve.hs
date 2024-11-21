@@ -22,6 +22,7 @@ import Control.Monad.Trans.State
 import Split
 import Control.Monad.ST (RealWorld)
 import GHC.Base
+import Unsafe.Coerce
 
 class MonadGen n => Improve m n | m -> n, n -> m where
   up   :: CodeQ (m a) -> n (CodeQ a)
@@ -31,26 +32,48 @@ instance Improve Identity Gen where
   up x = gen \k -> k [||runIdentity $$x||]
   down x = unGen x \a -> [||Identity $$a||]
 
+{-
+IO = State (State# RealWorld)
+=>
+Improve IO = Improve (StateT (State# RealWorld) Identity)
+           = (StateT (CodeQ (State# RealWorld)) (Improve Identity))
+           = StateT (CodeQ (State# RealWorld)) Gen
+
+-}
+
 {- YUCK! -}
-data IOGen a = IOGen (CodeQ (State# RealWorld) -> GenRep (TupleRep ((:) @RuntimeRep ZeroBitRep ((:) @RuntimeRep LiftedRep ('[] @RuntimeRep)))) (CodeQ (State# RealWorld),Gen a))
+data IOGen a = IOGen (CodeQ (State# RealWorld) -> GenRep (TupleRep ((:) @RuntimeRep ZeroBitRep ((:) @RuntimeRep LiftedRep ('[] @RuntimeRep)))) (CodeQ (State# RealWorld),a))
 
 instance Functor IOGen where
+  fmap = liftM
+
 instance Applicative IOGen where
+  pure = return
+  liftA2 = liftM2
+
 instance Monad IOGen where
+  return x = IOGen (\csr -> return (csr, x))
+  (>>=) (IOGen f) g = IOGen \csr ->
+    let (GenRep k) = f csr in
+    GenRep (\k' -> k (\(csr',a) ->
+        let (IOGen u) = g a in
+        unGenRep (u csr') k'
+      ))
+
 instance MonadGen IOGen where
-  liftGen ga = IOGen (return . (,ga))
+  liftGen (Gen (GenRep k')) = IOGen (\csr -> GenRep \k -> unsafeCoerce $ k' (\a -> unsafeCoerce $ k (csr,a)))
 
 instance Improve IO IOGen where
   up cioa = IOGen (\csr -> GenRep \k -> [||
         let (IO f) = $$cioa in
         let (# csr', a #) = f $$csr in
-        $$(k ([|| csr' ||],return [||a||]))
+        $$(k ([|| csr' ||],[||a||]))
      ||]
     )
   down (IOGen k) = [||
     IO (\sr -> $$(runGenRep $ do {
       (csr,q) <- k [||sr||];
-      return [|| (# $$csr, $$(runGen q) #) ||]
+      return [|| (# $$csr, $$q #) ||]
     })) ||]
 
 instance (Improve m n) => Improve (StateT s m) (StateT (CodeQ s) n) where
