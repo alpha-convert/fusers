@@ -34,8 +34,15 @@ unGen ::  Gen a -> (forall z. (a -> CodeQ @LiftedRep z) -> CodeQ @LiftedRep z)
 unGen (Gen (GenRep k)) = k
 
 instance Functor Gen where
+  fmap f (Gen g) = Gen (f <$> g)
 instance Applicative Gen where
+  pure = return
+  liftA2 = liftM2
+
 instance Monad Gen where
+  return x = Gen (return x)
+  (>>=) (Gen x) f = Gen (x >>= ((\(Gen u) -> u) . f))
+
 
 instance MonadFail (GenRep r) where
   fail = error
