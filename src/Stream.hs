@@ -112,26 +112,13 @@ take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -
     (cx,cn) <- split cxn
     b <- split [|| $$cn > 0 ||]
     if not b then stateMapC andZero <$> next cx
-    else _
-    {-
-    Gen $ \k ->
-    [||
-        let !(x,n) = $$cxn in
-        if n > 0 then
-        $$(unGen (next [||x||]) (\case
-            Effect cmx' -> k (Effect ((\cs -> [|| ($$cs,n) ||]) <$> cmx'))
-            Tau cx' -> k (Tau [|| ($$cx',n) ||])
-            Yield ca cx' -> k (Yield ca [|| ($$cx',n-1) ||])
-            Done cr -> k (Done cr)
-        ))
-        else $$(unGen (next [||x||]) (\case
-            Effect cmx' -> k (Effect (andZero <$> cmx'))
-            Tau cx' -> k (Tau (andZero cx'))
-            Yield _ cx' -> k (Tau (andZero cx'))
-            Done cr -> k (Done cr)
-        ))
-    ||]
-    -}
+    else do
+        st <- next cx
+        case st of
+            Effect cmx' -> return (Effect ((\cs -> [|| ($$cs,$$cn) ||]) <$> cmx'))
+            Tau cx' -> return (Tau [|| ($$cx', $$cn - 1) ||])
+            Yield ca cx' -> return (Yield ca [|| ($$cx', $$cn - 1) ||])
+            Done cr  -> return (Done cr)
         where
             andZero cx = [|| ($$cx,0) ||]
 

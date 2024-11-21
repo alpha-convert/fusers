@@ -40,14 +40,12 @@ instance Monad IOGen where
 instance MonadGen IOGen where
   liftGen ga = IOGen (return . (,ga))
 
-runIO :: IO a -> State# RealWorld -> (# State# RealWorld, a #)
-runIO (IO f) = f
-
--- @
-
 instance Improve IO IOGen where
-  up cioa = IOGen (\csr -> do
-      _
+  up cioa = IOGen (\csr -> GenRep \k -> [||
+        let (IO f) = $$cioa in
+        let (# csr', a #) = f $$csr in
+        $$(k ([|| csr' ||],return [||a||]))
+     ||]
     )
   down (IOGen k) = [||
     IO (\sr -> $$(runGenRep $ do {
