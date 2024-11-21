@@ -28,22 +28,20 @@ https://github.com/composewell/streaming-benchmarks/tree/master?tab=readme-ov-fi
 Even better: we should probably fuse the monads themselves, too!
 https://github.com/AndrasKovacs/staged/tree/main/icfp24paper/supplement
 -}
-data Step a n r s where
-    Effect :: n (Code Q s) -> Step a n r s
-    Tau :: CodeQ s -> Step a n r s
-    Yield :: CodeQ a -> CodeQ s -> Step a n r s
-    Done :: CodeQ r -> Step a n r s
+data Step a m r s where
+    Effect :: Improve m n => n (Code Q s) -> Step a m r s
+    Tau :: CodeQ s -> Step a m r s
+    Yield :: CodeQ a -> CodeQ s -> Step a m r s
+    Done :: CodeQ r -> Step a m r s
 
-stateMapC :: Functor n => (CodeQ s -> CodeQ s') -> Step a n r s -> Step a n r s'
+stateMapC :: (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
 stateMapC f (Effect cmx) = Effect (f <$> cmx)
 stateMapC f (Tau cx) = Tau (f cx)
 stateMapC f (Yield ca cx) = Yield ca (f cx)
 stateMapC _ (Done cr) = Done cr
 
-{- Probably should refactor this so m is the index and we have the Improve typeclass constraint inside Step. This way
-clients of the library never see the Improve monad n types. -} 
-data Stream a n r where
-    S :: forall a n r s. Gen (CodeQ s) -> (CodeQ s -> Gen (Step a n r s)) -> Stream a n r
+data Stream a m r where
+    S :: forall a m r s. Gen (CodeQ s) -> (CodeQ s -> Gen (Step a m r s)) -> Stream a m r
 
 {-
 CONSTRUCTION
@@ -55,7 +53,7 @@ range lo hi = S (return [|| lo ||]) $ \cn -> gen $ \k -> [||
     else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
 
-repeat :: (Improve m n) => CodeQ (m a) -> Stream a n Void
+repeat :: (Improve m n) => CodeQ (m a) -> Stream a m Void
 repeat act = S (return [|| Nothing ||]) $ \cmaybea -> do
     maybea <- split cmaybea
     case maybea of
@@ -79,7 +77,7 @@ mapC f (S cx0 next) = S cx0 $ \cx -> do
 map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
-mapMC :: (Monad m) => (CodeQ a -> m (CodeQ b)) -> Stream a m r -> Stream b m r
+mapMC :: (Improve m n) => (CodeQ a -> n (CodeQ b)) -> Stream a m r -> Stream b m r
 mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \cxm -> do
     (cx,cm) <- split cxm
     mc <- split cm
@@ -92,7 +90,7 @@ mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \
         Just ca -> return (Yield ca [|| ($$cx,Nothing) ||])
     
 
-drop :: (Functor m) => Int -> Stream a m r -> Stream a m r
+drop :: Int -> Stream a m r -> Stream a m r
 drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn <= 0 ||]
@@ -105,7 +103,7 @@ drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> 
        where
            andZero cx = [|| ($$cx,0) ||]
 
-dropWhileC :: (Improve m n) => (CodeQ a -> CodeQ Bool) -> Stream a n r -> Stream a n r
+dropWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m r
 dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cxb -> do
     (cx,cb) <- split cxb
     b <- split cb
@@ -122,7 +120,7 @@ dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $
         where
             with b cx = [|| ($$cx,b) ||]
 
-take :: Functor m => Int -> Stream a m r -> Stream a m r
+take :: Int -> Stream a m r -> Stream a m r
 take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn > 0 ||]
@@ -137,7 +135,7 @@ take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -
         where
             andZero cx = [|| ($$cx,0) ||]
 
-takeWhileC :: Functor m => (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
+takeWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
 takeWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cx -> gen $ \k -> [||
         let !(x,b) = $$cx in
         if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
@@ -164,7 +162,7 @@ filterC p (S cx0 next) = S cx0 $ \cx -> do
 filter :: CodeQ (a -> Bool) -> Stream a m r -> Stream a m r
 filter f = filterC (\ca -> [|| $$f $$ca ||])
 
-scanC :: Functor m => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
+scanC :: (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
 scanC step begin done (S kcs0 next) = S (do {cs0 <- kcs0; return [|| ($$cs0,$$begin) ||]}) $ \csx -> do
     (cs,cx) <- split csx
     next cs >>= \case
@@ -178,7 +176,7 @@ scanC step begin done (S kcs0 next) = S (do {cs0 <- kcs0; return [|| ($$cs0,$$be
 {-
 ELIMINATORS
 -}
-foldC :: (Monad m, Improve m n)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a n r -> CodeQ (m (b,r))
+foldC :: (Monad m)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
 foldC step begin done (S kcx0 next) = unGen kcx0 $ \cx0 -> [|| do
     let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
             Effect cmx' -> [|| $$(down cmx') >>= loop acc ||]
@@ -190,10 +188,10 @@ foldC step begin done (S kcx0 next) = unGen kcx0 $ \cx0 -> [|| do
  ||]
 
 
-toListC :: (Monad m, Improve m n) => Stream a n r -> CodeQ (m ([a],r))
+toListC :: (Monad m) => Stream a m r -> CodeQ (m ([a],r))
 toListC = foldC (\cdl ca -> [|| \ls -> $$cdl ($$ca : ls) ||]) [|| id ||] (\dl -> [|| $$dl [] ||])
 
-sumC :: (Monad m, Improve m n) => Stream Int n r -> CodeQ (m Int)
+sumC :: (Monad m) => Stream Int m r -> CodeQ (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
 fromListC :: CodeQ [a] -> Stream a m ()
@@ -203,8 +201,8 @@ fromListC cxs0 = S (return cxs0) $ \cxs -> gen $ \k -> [||
         y:ys -> $$(k (Yield [|| y ||] [||ys||]))
   ||]
 
-end :: (Monad m, Improve m n) => Stream a n r -> CodeQ (m r)
+end :: (Monad m) => Stream a m r -> CodeQ (m r)
 end s = [|| (snd <$> $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s)) ||]
 
-drain :: (Monad m, Improve m n) => Stream a n r -> CodeQ (m ())
+drain :: (Monad m) => Stream a m r -> CodeQ (m ())
 drain s = [|| (Control.Monad.void $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s))||]
