@@ -18,30 +18,43 @@ import Gen
 import Split
 import Improve
 import Data.Void
+import Control.Monad
 
 {-
 We need to win on all of these benchmarks.
 https://github.com/composewell/streaming-benchmarks/tree/master?tab=readme-ov-file
 -}
 
-{-
-Even better: we should probably fuse the monads themselves, too!
-https://github.com/AndrasKovacs/staged/tree/main/icfp24paper/supplement
--}
-data Step a m r s where
-    Effect :: Improve m n => n (Code Q s) -> Step a m r s
-    Tau :: CodeQ s -> Step a m r s
-    Yield :: CodeQ a -> CodeQ s -> Step a m r s
-    Done :: CodeQ r -> Step a m r s
 
-stateMapC :: (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
-stateMapC f (Effect cmx) = Effect (f <$> cmx)
-stateMapC f (Tau cx) = Tau (f cx)
-stateMapC f (Yield ca cx) = Yield ca (f cx)
-stateMapC _ (Done cr) = Done cr
+{-
+Having multi-steps turns things that would previously be complex into simple operations :)
+-}
+data Steps a m n r s where
+    Effect :: Improve m n => n (Steps a m n r s) -> Steps a m n r s
+    Yield :: CodeQ a -> Steps a m n r s -> Steps a m n r s
+    Tau :: CodeQ s -> Steps a m n r s
+    Done :: CodeQ r -> Steps a m n r s
+
+{- This could be better, so we don't always generate binds before the recursive call to loop.
+   In other words, if the steps value includes no effects, we should instead return a pure (x,Eiter s r).
+-}
+collectSteps :: Improve m n => Steps a m n r s -> n ([CodeQ a],Either (CodeQ s) (CodeQ r))
+collectSteps (Effect nss) = nss >>= collectSteps
+collectSteps (Yield a k) = do
+    (as,end) <- collectSteps k
+    return (a:as,end)
+collectSteps (Tau cx) = return ([],Left cx)
+collectSteps (Done cr) = return ([],Right cr)
+
+
+stateMapC :: (CodeQ s -> CodeQ s') -> Steps a m n r s -> Steps a m n r s'
+stateMapC f (Effect k) = Effect (stateMapC f <$> k)
+stateMapC f (Yield a s) = Yield a (stateMapC f s)
+stateMapC f (Tau x) = Tau (f x)
+stateMapC _ (Done x) = Done x
 
 data Stream a m r where
-    S :: forall a m r s. Gen (CodeQ s) -> (CodeQ s -> Gen (Step a m r s)) -> Stream a m r
+    S :: forall a m n r s. Improve m n => Gen (CodeQ s) -> (CodeQ s -> Gen (Steps a m n r s)) -> Stream a m r
 
 {-
 CONSTRUCTION
@@ -50,17 +63,14 @@ CONSTRUCTION
 range :: (Lift a, Enum a, Ord a) => a -> a -> Stream a m ()
 range lo hi = S (return [|| lo ||]) $ \cn -> gen $ \k -> [||
     if $$cn >= hi then $$(k (Done [|| () ||]))
-    else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
+    else $$(k (Yield [|| $$cn ||] (Tau [|| succ $$cn ||])))
  ||]
 
 repeat :: (Improve m n) => CodeQ (m a) -> Stream a m Void
-repeat act = S (return [|| Nothing ||]) $ \cmaybea -> do
-    maybea <- split cmaybea
-    case maybea of
-        Nothing -> return $ Effect $ do
-            a <- up act
-            return [|| Just $$a ||]
-        Just ca -> return (Yield ca [|| Nothing ||])
+repeat act = S (return [|| () ||]) $ \_ -> do
+    return $ Effect $ do
+        ca <- up act
+        return (Yield ca (Tau [|| () ||]))
 
 {-
 COMBINATORS
@@ -69,9 +79,9 @@ COMBINATORS
 mapC :: (CodeQ a -> CodeQ b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next) = S cx0 $ \cx -> do
     next cx >>= \case
-        Effect ams -> return (Effect ams)
+        Effect ams -> return (Effect (_ <$> ams))
         Tau cx' -> return (Tau cx')
-        Yield ca cx' -> return (Yield (f ca) cx')
+        Yield ca cx' -> return (Yield (f ca) (_ cx'))
         Done cr -> return (Done cr)
 
 map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
@@ -88,7 +98,7 @@ mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \
             Yield ca cx' -> return (Effect $ do {cb <- f ca; return [|| ($$cx',Just $$cb) ||]})
             Done cr -> return (Done cr)
         Just ca -> return (Yield ca [|| ($$cx,Nothing) ||])
-    
+
 
 drop :: Int -> Stream a m r -> Stream a m r
 drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> do
@@ -176,15 +186,23 @@ scanC step begin done (S kcs0 next) = S (do {cs0 <- kcs0; return [|| ($$cs0,$$be
 {-
 ELIMINATORS
 -}
-foldC :: (Monad m)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
-foldC step begin done (S kcx0 next) = unGen kcx0 $ \cx0 -> [|| do
-    let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
-            Effect cmx' -> [|| $$(down cmx') >>= loop acc ||]
-            Tau cx' -> [|| loop acc $$cx' ||]
-            Yield ca cx' -> [|| loop $$(step [|| acc ||] ca) $$cx' ||]
-            Done cr -> [|| return ($$(done [|| acc ||]),$$cr) ||]
-         )
-    loop $$begin $$cx0
+
+foldC :: forall a b x m r. Monad m => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
+foldC step begin done (S (kcx0 :: Gen (CodeQ s)) next) = unGen kcx0 $ \cx0 -> [|| do
+    let loop (!acc,!x) = $$(runGen $ do {
+        st <- next [||x||];
+        let m = collectSteps st in
+        _
+        -- let u = collectSteps [||acc||] st
+        -- return [|| $$(down $ collectSteps _ _) >>= _ ||]
+    })
+    -- \case
+            -- Effect cmx' -> [|| $$(downAll [||acc||] [||x||] cmx') >>= loop ||]
+            -- Tau cx' -> [|| loop (acc,$$cx') ||]
+            -- Yield ca cx' -> [|| loop ($$(step [|| acc ||] ca),$$cx') ||]
+            -- Done cr -> [|| return ($$(done [|| acc ||]),$$cr) ||]
+        --  )
+    loop ($$begin,$$cx0)
  ||]
 
 
@@ -194,11 +212,14 @@ toListC = foldC (\cdl ca -> [|| \ls -> $$cdl ($$ca : ls) ||]) [|| id ||] (\dl ->
 sumC :: (Monad m) => Stream Int m r -> CodeQ (m Int)
 sumC s = [|| $$(foldC (\cx cy -> [|| $$cx + $$cy ||]) [|| 0 ||] (\cx -> [|| return $$cx ||]) s) >>= fst ||]
 
+fromList' :: [CodeQ a] -> Stream a m ()
+fromList' xs = S (return [|| () ||]) $ \_ -> return (foldr Yield (Done [||()||]) xs)
+
 fromListC :: CodeQ [a] -> Stream a m ()
 fromListC cxs0 = S (return cxs0) $ \cxs -> gen $ \k -> [||
     case $$cxs of
         [] -> $$(k (Done [|| () ||]))
-        y:ys -> $$(k (Yield [|| y ||] [||ys||]))
+        y:ys -> $$(k (Yield [|| y ||] (Tau [||ys||])))
   ||]
 
 end :: (Monad m) => Stream a m r -> CodeQ (m r)
