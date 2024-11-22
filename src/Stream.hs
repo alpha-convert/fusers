@@ -16,7 +16,6 @@ import Language.Haskell.TH.Syntax
 import qualified Control.Monad
 import Gen
 import Split
-import Improve
 import Data.Void
 
 {-
@@ -29,13 +28,13 @@ Even better: we should probably fuse the monads themselves, too!
 https://github.com/AndrasKovacs/staged/tree/main/icfp24paper/supplement
 -}
 data Step a m r s where
-    Effect :: Improve m n => n (Code Q s) -> Step a m r s
+    Effect :: CodeQ (m s) -> Step a m r s
     Tau :: CodeQ s -> Step a m r s
     Yield :: CodeQ a -> CodeQ s -> Step a m r s
     Done :: CodeQ r -> Step a m r s
 
-stateMapC :: (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
-stateMapC f (Effect cmx) = Effect (f <$> cmx)
+stateMapC :: Monad m => (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
+stateMapC f (Effect cmx) = Effect [|| $$cmx >>= (\s -> return $$(f [||s||])) ||]
 stateMapC f (Tau cx) = Tau (f cx)
 stateMapC f (Yield ca cx) = Yield ca (f cx)
 stateMapC _ (Done cr) = Done cr
@@ -53,13 +52,11 @@ range lo hi = S (return [|| lo ||]) $ \cn -> gen $ \k -> [||
     else $$(k (Yield [|| $$cn ||] [|| succ $$cn ||]))
  ||]
 
-repeat :: (Improve m n) => CodeQ (m a) -> Stream a m Void
+repeat :: (Monad m) => CodeQ (m a) -> Stream a m Void
 repeat act = S (return [|| Nothing ||]) $ \cmaybea -> do
     maybea <- split cmaybea
     case maybea of
-        Nothing -> return $ Effect $ do
-            a <- up act
-            return [|| Just $$a ||]
+        Nothing -> return $ Effect $ [|| do {a <- $$act; return (Just a)} ||]
         Just ca -> return (Yield ca [|| Nothing ||])
 
 {-
@@ -77,41 +74,41 @@ mapC f (S cx0 next) = S cx0 $ \cx -> do
 map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
 
-mapMC :: (Improve m n) => (CodeQ a -> n (CodeQ b)) -> Stream a m r -> Stream b m r
+mapMC :: Monad m => (CodeQ a -> CodeQ (m b)) -> Stream a m r -> Stream b m r
 mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \cxm -> do
     (cx,cm) <- split cxm
     mc <- split cm
     case mc of
         Nothing -> next cx >>= \case
-            Effect u -> return (Effect ((\cs -> [|| ($$cs,Nothing) ||]) <$> u))
+            Effect u -> return (Effect [|| $$u >>= (\s -> return (s,Nothing)) ||])
             Tau cx' -> return (Tau [|| ($$cx',Nothing) ||])
-            Yield ca cx' -> return (Effect $ do {cb <- f ca; return [|| ($$cx',Just $$cb) ||]})
+            Yield ca cx' -> return (Effect [|| do {b <- $$(f ca); return ($$cx',Just b) } ||])
             Done cr -> return (Done cr)
         Just ca -> return (Yield ca [|| ($$cx,Nothing) ||])
-    
 
-drop :: Int -> Stream a m r -> Stream a m r
+
+drop :: Monad m => Int -> Stream a m r -> Stream a m r
 drop n (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n) ||]}) $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn <= 0 ||]
     if b then stateMapC andZero <$> next cx else do
       next cx >>= \case
-          Effect cmx' -> return (Effect ((\cx' -> [|| ($$cx',$$cn) ||] ) <$> cmx'))
+        --   Effect cmx' -> return (Effect ((\cx' -> [|| ($$cx',$$cn) ||] ) <$> cmx'))
+          Effect cmx' -> return (Effect [|| $$cmx' >>= (\s -> return (s,$$cn)) ||])
           Tau cx' -> return (Tau [|| ($$cx',$$cn) ||])
           Yield _ cx' -> return (Tau [|| ($$cx',$$cn - 1) ||])
           Done cr -> return (Done cr)
        where
            andZero cx = [|| ($$cx,0) ||]
 
-dropWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m r
+dropWhileC :: Monad m => (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m r
 dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cxb -> do
     (cx,cb) <- split cxb
     b <- split cb
     if not b
     then stateMapC (with False) <$> next cx
     else next cx >>= \case
-            -- Effect cmx' -> return (Effect (fmapAction (with True) cmx'))
-            Effect cmx' -> return (Effect (with True <$> cmx'))
+            Effect cmx' -> return (Effect [|| $$cmx' >>= (\s -> return (s,True)) ||])
             Tau cx' -> return (Tau [||($$cx',True)||])
             Yield ca cx' -> do
                 b' <- split (f ca)
@@ -120,7 +117,7 @@ dropWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $
         where
             with b cx = [|| ($$cx,b) ||]
 
-take :: Int -> Stream a m r -> Stream a m r
+take :: Monad m => Int -> Stream a m r -> Stream a m r
 take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -> do
     (cx,cn) <- split cxn
     b <- split [|| $$cn > 0 ||]
@@ -128,18 +125,19 @@ take n0 (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,n0) ||]}) $ \cxn -
     else do
         st <- next cx
         case st of
-            Effect cmx' -> return (Effect ((\cs -> [|| ($$cs,$$cn) ||]) <$> cmx'))
+            -- Effect cmx' -> return (Effect ((\cs -> [|| ($$cs,$$cn) ||]) <$> cmx'))
+            Effect cmx' -> return (Effect [|| $$cmx' >>= (\s -> return (s,$$cn)) ||])
             Tau cx' -> return (Tau [|| ($$cx', $$cn - 1) ||])
             Yield ca cx' -> return (Yield ca [|| ($$cx', $$cn - 1) ||])
             Done cr  -> return (Done cr)
         where
             andZero cx = [|| ($$cx,0) ||]
 
-takeWhileC :: (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
+takeWhileC :: Monad m => (CodeQ a -> CodeQ Bool) -> Stream a m r -> Stream a m ()
 takeWhileC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,True) ||]}) $ \cx -> gen $ \k -> [||
         let !(x,b) = $$cx in
         if not b then $$(k (Done [|| () ||])) else $$(unGen (next [||x||]) (\case
-            Effect cmx' -> k (Effect (with True <$> cmx'))
+            Effect cmx' -> k (Effect [|| $$cmx' >>= (\s -> return (s,True)) ||])
             Tau cx' -> k (Tau (with True cx'))
             Yield ca cx' -> [|| if $$(f ca) then $$(k (Yield ca (with True cx'))) else $$(k (Tau (with False cx'))) ||]
             Done _ -> k (Done [|| () ||])
@@ -162,11 +160,12 @@ filterC p (S cx0 next) = S cx0 $ \cx -> do
 filter :: CodeQ (a -> Bool) -> Stream a m r -> Stream a m r
 filter f = filterC (\ca -> [|| $$f $$ca ||])
 
-scanC :: (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
+scanC :: Monad m => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Stream b m r
 scanC step begin done (S kcs0 next) = S (do {cs0 <- kcs0; return [|| ($$cs0,$$begin) ||]}) $ \csx -> do
     (cs,cx) <- split csx
     next cs >>= \case
-        Effect cms' -> return (Effect ((\cs' -> [|| ($$cs',$$cx) ||]) <$> cms'))
+        -- Effect cms' -> return (Effect ((\cs' -> [|| ($$cs',$$cx) ||]) <$> cms'))
+        Effect cms' -> return (Effect [|| $$cms' >>= (\s' -> return (s',$$cx)) ||])
         Tau cs' -> return (Tau [|| ($$cs',$$cx)||])
         Yield ca cs' -> do
             cx' <- genLet (step cx ca)
@@ -179,7 +178,7 @@ ELIMINATORS
 foldC :: (Monad m)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
 foldC step begin done (S kcx0 next) = unGen kcx0 $ \cx0 -> [|| do
     let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
-            Effect cmx' -> [|| $$(down cmx') >>= loop acc ||]
+            Effect cmx' -> [|| $$(cmx') >>= loop acc ||]
             Tau cx' -> [|| loop acc $$cx' ||]
             Yield ca cx' -> [|| loop $$(step [|| acc ||] ca) $$cx' ||]
             Done cr -> [|| return ($$(done [|| acc ||]),$$cr) ||]
