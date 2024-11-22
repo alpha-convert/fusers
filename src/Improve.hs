@@ -10,6 +10,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeApplications #-}
 
+
+{-
+This is more or less entirely taken from
+https://github.com/AndrasKovacs/staged/blob/main/icfp24paper/supplement/haskell-cftt/CFTT/Improve.hs.
+-}
+
 module Improve where
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Except
