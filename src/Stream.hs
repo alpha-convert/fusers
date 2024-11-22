@@ -33,6 +33,18 @@ data Step a m r s where
     Yield :: CodeQ a -> CodeQ s -> Step a m r s
     Done :: CodeQ r -> Step a m r s
 
+effect :: CodeQ (m s) -> Gen (Step a m r s)
+effect = return . Effect
+
+tau :: CodeQ s -> Gen (Step a m r s)
+tau = return . Tau
+
+yield :: CodeQ a -> CodeQ s -> Gen (Step a m r s)
+yield ca cx = return (Yield ca cx)
+
+done :: MonadGen m' => CodeQ r -> m' (Step a m r s)
+done = return . Done
+
 stateMapC :: Monad m => (CodeQ s -> CodeQ s') -> Step a m r s -> Step a m r s'
 stateMapC f (Effect cmx) = Effect [|| $$cmx >>= (\s -> return $$(f [||s||])) ||]
 stateMapC f (Tau cx) = Tau (f cx)
@@ -56,8 +68,8 @@ repeat :: (Monad m) => CodeQ (m a) -> Stream a m Void
 repeat act = S (return [|| Nothing ||]) $ \cmaybea -> do
     maybea <- split cmaybea
     case maybea of
-        Nothing -> return $ Effect $ [|| do {a <- $$act; return (Just a)} ||]
-        Just ca -> return (Yield ca [|| Nothing ||])
+        Nothing -> effect $ [|| Just <$> $$act ||]
+        Just ca -> yield ca [|| Nothing ||]
 
 {-
 COMBINATORS
@@ -66,10 +78,10 @@ COMBINATORS
 mapC :: (CodeQ a -> CodeQ b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next) = S cx0 $ \cx -> do
     next cx >>= \case
-        Effect ams -> return (Effect ams)
-        Tau cx' -> return (Tau cx')
-        Yield ca cx' -> return (Yield (f ca) cx')
-        Done cr -> return (Done cr)
+        Effect ams -> effect ams
+        Tau cx' -> tau cx'
+        Yield ca cx' -> yield (f ca) cx'
+        Done cr -> done cr
 
 map :: CodeQ (a -> b) -> Stream a m r -> Stream b m r
 map f = mapC (\ca -> [|| $$f $$ca ||])
@@ -80,11 +92,11 @@ mapMC f (S kcx0 next) = S (do {cx0 <- kcx0; return [|| ($$cx0,Nothing) ||]}) $ \
     mc <- split cm
     case mc of
         Nothing -> next cx >>= \case
-            Effect u -> return (Effect [|| $$u >>= (\s -> return (s,Nothing)) ||])
-            Tau cx' -> return (Tau [|| ($$cx',Nothing) ||])
-            Yield ca cx' -> return (Effect [|| do {b <- $$(f ca); return ($$cx',Just b) } ||])
-            Done cr -> return (Done cr)
-        Just ca -> return (Yield ca [|| ($$cx,Nothing) ||])
+            Effect u -> effect [|| $$u >>= (\s -> return (s,Nothing)) ||]
+            Tau cx' -> tau [|| ($$cx',Nothing) ||]
+            Yield ca cx' -> effect [|| do {b <- $$(f ca); return ($$cx',Just b) } ||]
+            Done cr -> done cr
+        Just ca -> yield ca [|| ($$cx,Nothing) ||]
 
 
 drop :: Monad m => Int -> Stream a m r -> Stream a m r
