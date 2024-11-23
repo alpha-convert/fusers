@@ -28,7 +28,7 @@ Even better: we should probably fuse the monads themselves, too!
 https://github.com/AndrasKovacs/staged/tree/main/icfp24paper/supplement
 -}
 data Step a m r s j where
-    Jump :: j -> Step a m r s j
+    Jump :: j -> CodeQ s -> Step a m r s j
     Effect :: CodeQ (m s) -> Step a m r s j
     Tau :: CodeQ s -> Step a m r s j
     Yield :: CodeQ a -> CodeQ s -> Step a m r s j
@@ -37,8 +37,8 @@ data Step a m r s j where
 yield :: MonadGen m' => CodeQ a -> CodeQ s -> m' (Step a m r s j)
 yield ca cs = return (Yield ca cs)
 
-jump :: MonadGen m' => j -> m' (Step a m r s j)
-jump j = return (Jump j)
+jump :: MonadGen m' => j -> CodeQ s -> m' (Step a m r s j)
+jump j cx = return (Jump j cx)
 
 done :: MonadGen m' => CodeQ r -> m' (Step a m r s j)
 done = return . Done
@@ -56,19 +56,23 @@ data Stream a m r where
 CONSTRUCTION
 -}
 
-{- cute: you can do completely static lists embedded. probaly a nice feature. -}
-fromList :: [CodeQ a] -> Stream a m ()
-fromList [] = S [|| () ||] (const (done [||()||])) absurd
-fromList (ca:xs) = S [|| () ||] (const _) _
+range :: Int -> Int -> Stream Int m ()
+range lo hi = S [|| lo ||] next absurd
+    where
+        next ca = do
+            b <- split [|| $$ca < hi ||]
+            if b then do
+                ca' <- genLet [|| succ $$ca ||]
+                yield ca' ca' else done [|| () ||]
 
 append :: Stream a m () -> Stream a m () -> Stream a m ()
 append (S cx0 next andThen) s' = S cx0 next' andThen'
     where
         next' cx = next cx >>= \case
-            Done _ -> return (Jump (Right ()))
+            Done _ -> return (Jump (Right ()) cx)
             Yield ca cx' -> return (Yield ca cx')
             Tau cx' -> return (Tau cx')
-            Jump j -> return (Jump (Left j))
+            Jump j cx' -> return (Jump (Left j) cx')
             Effect cmx' -> return (Effect cmx')
         andThen' j cx' = case j of
             Left j0 -> append (andThen j0 cx') s'
@@ -79,18 +83,21 @@ cons ca s = S [|| False ||] next after
     where
         next cb = do
             b <- split cb
-            if not b then yield ca [||True||] else jump ()
+            if not b then yield ca [||True||] else jump () cb {- this is a bit strange, jumping requires a state (sometimes). this was nice for various reasons, but it's also weird when you jump off of a Done. -}
         after () _ = s
 
 {-
 COMBINATORS
 -}
 
+drop :: Int -> Stream a m r -> Stream a m r
+drop n (S cx0 next after) = _
+
 mapC :: (CodeQ a -> CodeQ b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next after) = S cx0 next' (\j cs -> mapC f (after j cs))
     where
         next' x = next x >>= \case
-                    Jump j -> return (Jump j)
+                    Jump j cx' -> return (Jump j cx')
                     Effect cmx' -> return (Effect cmx')
                     Tau cx' -> return (Tau cx')
                     Yield ca cx' -> return (Yield (f ca) cx')
@@ -99,20 +106,25 @@ mapC f (S cx0 next after) = S cx0 next' (\j cs -> mapC f (after j cs))
 {-
 ELIMINATORS
 -}
-foldC :: (Monad m)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> CodeQ (m (b,r))
-foldC step begin done (S kcx0 next _) = unGen kcx0 $ \cx0 -> [|| do
-    let loop !acc !x = $$(unGen (next [|| x ||]) $ \case
-            Effect cmx' -> [|| $$(cmx') >>= loop acc ||]
-            Tau cx' -> [|| loop acc $$cx' ||]
-            Yield ca cx' -> [|| loop $$(step [|| acc ||] ca) $$cx' ||]
-            Done cr -> [|| return ($$(done [|| acc ||]),$$cr) ||]
-         )
-    loop $$begin $$cx0
- ||]
-
+foldC :: (Monad m)  => (CodeQ x -> CodeQ a -> CodeQ x) -> CodeQ x -> (CodeQ x -> CodeQ b) -> Stream a m r -> Gen (CodeQ (m (b,r)))
+foldC step begin finalize (S cx0 next after) = do
+    loop <- genLetRec $ \loopRec -> do
+        genLam $ \cacc -> genLam $ \cx -> do
+            st <- next cx
+            case st of
+                Effect cmx' -> return [|| $$cmx' >>= $$loopRec $$cacc ||]
+                Tau cx' -> return [|| $$loopRec $$cacc $$cx' ||]
+                Yield ca cx' -> do
+                    cacc' <- genLet (step cacc ca)
+                    return [|| $$loopRec $$cacc' $$cx' ||]
+                Done cr -> return [|| return ($$(finalize cacc),$$cr) ||]
+                Jump j cx' -> foldC step cacc finalize (after j cx')
+    return [|| $$loop $$begin $$cx0 ||]
 
 end :: (Monad m) => Stream a m r -> CodeQ (m r)
-end s = [|| (snd <$> $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s)) ||]
+end s = [|| (snd <$> $$(runGen $ foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s)) ||]
 
 drain :: (Monad m) => Stream a m r -> CodeQ (m ())
-drain s = [|| (Control.Monad.void $$(foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s))||]
+drain s = [|| (Control.Monad.void $$(runGen $ foldC (\_ _ -> [|| () ||]) [|| () ||] (const [|| () ||]) s))||]
+
+printCode c = ppr <$> runQ (unTypeCode c)
