@@ -40,6 +40,9 @@ yield ca cs = return (Yield ca cs)
 jump :: MonadGen m' => j -> CodeQ s -> m' (Step a m r s j)
 jump j cx = return (Jump j cx)
 
+tau :: MonadGen m' => CodeQ s -> m' (Step a m r s j)
+tau = return . Tau
+
 done :: MonadGen m' => CodeQ r -> m' (Step a m r s j)
 done = return . Done
 
@@ -48,6 +51,7 @@ stateMapC f (Effect cmx) = Effect [|| $$cmx >>= (\s -> return $$(f [||s||])) ||]
 stateMapC f (Tau cx) = Tau (f cx)
 stateMapC f (Yield ca cx) = Yield ca (f cx)
 stateMapC _ (Done cr) = Done cr
+stateMapC f (Jump j cx) = Jump j (f cx)
 
 data Stream a m r where
     S :: forall j a m r s. CodeQ s -> (CodeQ s -> Gen (Step a m r s j)) -> (j -> CodeQ s -> Stream a m r) -> Stream a m r
@@ -90,8 +94,15 @@ cons ca s = S [|| False ||] next after
 COMBINATORS
 -}
 
-drop :: Int -> Stream a m r -> Stream a m r
-drop n (S cx0 next after) = _
+drop :: CodeQ Int -> Stream a m r -> Stream a m r
+drop cn s = S cn dropN (\() _ -> s)
+    where
+        dropN cn = do
+            b <- split [|| $$cn > 0 ||]
+            if b then tau [|| $$cn - 1 ||] else jump () [||0||]
+
+interleave :: Stream a m () -> Stream a m () -> Stream a m ()
+interleave = _
 
 mapC :: (CodeQ a -> CodeQ b) -> Stream a m r -> Stream b m r
 mapC f (S cx0 next after) = S cx0 next' (\j cs -> mapC f (after j cs))
